@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>3D Multiplayer FPS</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%;
+      width: 10px; height: 10px; background: white;
+      transform: translate(-50%, -50%); border-radius: 50%;
+      pointer-events: none; z-index: 100;
+    }
+    #ui {
+      position: absolute; top: 10px; left: 10px; color: white;
+      font-family: Arial; font-weight: bold; pointer-events: none; z-index: 100;
+      font-size: 24px; text-shadow: 2px 2px 0 #000;
+    }
+    #winScreen {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font-family: Arial; font-weight: bold; font-size: 60px; color: yellow;
+      text-shadow: 4px 4px 0 #000; display: none; z-index: 200; text-align: center;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/PointerLockControls.js"></script>
+</head>
+<body>
+  <div id="crosshair"></div>
+  <div id="ui">Click to lock mouse.<br>Health: 100 | Score: 0 | Ammo: 0</div>
+  <div id="winScreen">SOMEONE WON!<br><span style="font-size:30px">Restarting in 5s...</span></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const ui = document.getElementById('ui');
+    const winScreen = document.getElementById('winScreen');
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb); 
+    scene.fog = new THREE.Fog(0x87ceeb, 200, 800); 
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1500);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+    sun.position.set(500, 800, 500);
+    sun.castShadow = true;
+    sun.shadow.camera.left = -800; sun.shadow.camera.right = 800;
+    sun.shadow.camera.top = 800; sun.shadow.camera.bottom = -800;
+    sun.shadow.camera.far = 2000;
+    sun.shadow.mapSize.width = 2048; sun.shadow.mapSize.height = 2048;
+    scene.add(sun);
+
+    const grassCanvas = document.createElement('canvas'); grassCanvas.width = 128; grassCanvas.height = 128;
+    const gCtx = grassCanvas.getContext('2d');
+    gCtx.fillStyle = '#2d5a27'; gCtx.fillRect(0,0,128,128); 
+    gCtx.fillStyle = '#3a7233'; gCtx.fillRect(0,0,64,64); gCtx.fillRect(64,64,64,64); 
+    const grassTex = new THREE.CanvasTexture(grassCanvas);
+    grassTex.wrapS = THREE.RepeatWrapping; grassTex.wrapT = THREE.RepeatWrapping; grassTex.repeat.set(50, 50);
+
+    const brickCanvas = document.createElement('canvas'); brickCanvas.width = 128; brickCanvas.height = 128;
+    const bCtx = brickCanvas.getContext('2d');
+    bCtx.fillStyle = '#8B4513'; bCtx.fillRect(0,0,128,128); 
+    bCtx.strokeStyle = '#5A2A0C'; bCtx.lineWidth = 4; 
+    bCtx.strokeRect(0,0,128,64); bCtx.strokeRect(-64,64,128,64); bCtx.strokeRect(64,64,128,64);
+    const brickTex = new THREE.CanvasTexture(brickCanvas);
+
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), new THREE.MeshStandardMaterial({ map: grassTex, roughness: 0.8 }));
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+    scene.add(floor);
+
+    socket.on('initMap', (walls) => {
+      const wallGeo = new THREE.BoxGeometry(25, 50, 25);
+      const wallMat = new THREE.MeshStandardMaterial({ map: brickTex, roughness: 0.9 }); 
+      walls.forEach(w => {
+        const mesh = new THREE.Mesh(wallGeo, wallMat);
+        mesh.position.set(w.x, 25, w.z); 
+        mesh.castShadow = true; mesh.receiveShadow = true;
+        scene.add(mesh);
+      });
+    });
+
+    const controls = new THREE.PointerLockControls(camera, document.body);
+    document.addEventListener('click', () => controls.lock());
+
+    const inputs = { forward: false, backward: false, left: false, right: false, jump: false };
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyW') inputs.forward = true; if (e.code === 'KeyA') inputs.left = true;
+      if (e.code === 'KeyS') inputs.backward = true; if (e.code === 'KeyD') inputs.right = true;
+      if (e.code === 'Space') inputs.jump = true;
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.code === 'KeyW') inputs.forward = false; if (e.code === 'KeyA') inputs.left = false;
+      if (e.code === 'KeyS') inputs.backward = false; if (e.code === 'KeyD') inputs.right = false;
+      if (e.code === 'Space') inputs.jump = false;
+    });
+
+    setInterval(() => {
+      if (controls.isLocked) {
+        const euler = new THREE.Euler(0, 0, 0, 'YXZ'); euler.setFromQuaternion(camera.quaternion);
+        socket.emit('playerState', { inputs: inputs, yaw: euler.y, pitch: euler.x });
+      }
+    }, 1000 / 60);
+
+    document.addEventListener('mousedown', (e) => {
+      if (controls.isLocked && e.button === 0) socket.emit('shoot');
+    });
+
+    const playerGroups = {};
+    const bulletMeshes = [];
+    const pickupMeshes = {}; // Render memory for items on the ground
+
+    socket.on('gameState', (state) => {
+      // 1. Check Win Condition
+      if (state.gameOver) {
+        winScreen.style.display = 'block';
+        winScreen.style.color = '#' + state.winnerColor;
+      } else {
+        winScreen.style.display = 'none';
+      }
+
+      // 2. Personal UI Updates
+      if (state.players[socket.id]) {
+        const me = state.players[socket.id];
+        camera.position.set(me.x, me.y, me.z);
+        
+        let shieldStatus = me.shieldTimer > 0 ? " | <span style='color:cyan'>SHIELD ACTIVE</span>" : "";
+        ui.innerHTML = `Health: ${me.health} | Score: ${me.score} | Ammo: ${me.ammo}${shieldStatus}`;
+      }
+
+      // 3. Draw Enemies
+      for (const id in state.players) {
+        if (id === socket.id) continue;
+        const serverPlayer = state.players[id];
+        
+        if (!playerGroups[id]) {
+          const group = new THREE.Group();
+          const character = new THREE.Group();
+          character.name = "character";
+          
+          const mat = new THREE.MeshStandardMaterial({ color: serverPlayer.color, roughness: 0.5 });
+          const addPart = (geo, y, x=0, z=0) => {
+            const m = new THREE.Mesh(geo, mat);
+            m.position.set(x, y, z); m.castShadow = true; character.add(m);
+          };
+          addPart(new THREE.BoxGeometry(8, 8, 8), 18); // Head
+          addPart(new THREE.BoxGeometry(10, 10, 6), 9); // Torso
+          addPart(new THREE.BoxGeometry(3, 10, 3), 9, -6.5); // L Arm
+          addPart(new THREE.BoxGeometry(3, 10, 3), 9, 6.5);  // R Arm
+          addPart(new THREE.BoxGeometry(4, 10, 4), -1, -2.5); // L Leg
+          addPart(new THREE.BoxGeometry(4, 10, 4), -1, 2.5);  // R Leg
+          group.add(character);
+
+          const hpMesh = new THREE.Mesh(new THREE.BoxGeometry(10, 2, 2), new THREE.MeshBasicMaterial({ color: 0x00ff00 }));
+          hpMesh.position.y = 26; hpMesh.name = "healthBar"; group.add(hpMesh);
+          
+          // The visual blue bubble for the shield
+          const shieldGeo = new THREE.SphereGeometry(15, 16, 16);
+          const shieldMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.3, wireframe: true });
+          const shieldMesh = new THREE.Mesh(shieldGeo, shieldMat);
+          shieldMesh.position.y = 10; shieldMesh.name = "shieldBubble";
+          group.add(shieldMesh);
+
+          scene.add(group);
+          playerGroups[id] = group;
+        }
+        
+        const group = playerGroups[id];
+        group.position.set(serverPlayer.x, serverPlayer.y - 10, serverPlayer.z);
+        group.getObjectByName("character").rotation.y = serverPlayer.yaw;
+        
+        // Toggle shield bubble visibility based on server timer
+        group.getObjectByName("shieldBubble").visible = (serverPlayer.shieldTimer > 0);
+
+        const hpMesh = group.getObjectByName("healthBar");
+        hpMesh.scale.x = Math.max(serverPlayer.health / 100, 0.01);
+        hpMesh.material.color.setHex(serverPlayer.health <= 25 ? 0xff0000 : 0x00ff00);
+      }
+
+      // Cleanup disconnected players
+      for (const id in playerGroups) {
+        if (!state.players[id]) { scene.remove(playerGroups[id]); delete playerGroups[id]; }
+      }
+
+      // 4. Draw Bullets
+      bulletMeshes.forEach(mesh => scene.remove(mesh));
+      bulletMeshes.length = 0;
+      for (const b of state.bullets) {
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(2, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffff00 }));
+        mesh.position.set(b.x, b.y, b.z);
+        scene.add(mesh);
+        bulletMeshes.push(mesh);
+      }
+
+      // 5. Draw Items (Pickups)
+      const currentPickupIds = new Set(state.pickups.map(p => p.id));
+      // Remove old picked up items
+      for (const id in pickupMeshes) {
+        if (!currentPickupIds.has(Number(id))) {
+          scene.remove(pickupMeshes[id]); delete pickupMeshes[id];
+        }
+      }
+      // Add new items
+      for (const p of state.pickups) {
+        if (!pickupMeshes[p.id]) {
+          let mesh;
+          if (p.type === 'ammo') { // Orange Ammo Box
+            mesh = new THREE.Mesh(new THREE.BoxGeometry(6, 6, 6), new THREE.MeshStandardMaterial({ color: 0xffaa00 }));
+          } else { // Cyan Shield Diamond
+            mesh = new THREE.Mesh(new THREE.OctahedronGeometry(5), new THREE.MeshStandardMaterial({ color: 0x00ffff }));
+          }
+          mesh.position.set(p.x, 5, p.z);
+          mesh.castShadow = true;
+          scene.add(mesh);
+          pickupMeshes[p.id] = mesh;
+        }
+      }
+    });
+
+    // Make the items spin!
+    function animate() {
+      requestAnimationFrame(animate);
+      for (const id in pickupMeshes) {
+        pickupMeshes[id].rotation.x += 0.02;
+        pickupMeshes[id].rotation.y += 0.03;
+      }
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
